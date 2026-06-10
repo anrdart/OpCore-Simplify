@@ -253,7 +253,7 @@ class ConfigProdigy:
                 codec_id = codec_properties.get("Device ID")
 
                 if codec_properties.get("Controller Device ID"):
-                    for device_name, device_properties in hardware_report.get("System Devices").items():
+                    for device_name, device_properties in hardware_report.get("System Devices", {}).items():
                         if device_properties.get("Device ID") == codec_properties.get("Controller Device ID"):
                             audio_controller_properties = device_properties
                             break

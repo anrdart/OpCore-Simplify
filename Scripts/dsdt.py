@@ -118,7 +118,7 @@ class DSDT:
                     continue # Skip any already disassembled files
                 target_files[x] = {
                     "assembled_name": os.path.basename(x),
-                    "disassembled_name": ".".join(x.split(".")[:-1]) + ".dsl",
+                    "disassembled_name": (".".join(x.split(".")[:-1]) if "." in x else x) + ".dsl",
                 }
             if not target_files:
                 # Somehow we ended up with none?

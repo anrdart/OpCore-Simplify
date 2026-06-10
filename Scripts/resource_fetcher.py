@@ -154,6 +154,10 @@ class ResourceFetcher:
             print(progress, end="\r")
             
         print()
+        if total_size and bytes_downloaded != total_size:
+            print("Download truncated: expected {} bytes, got {} bytes.".format(total_size, bytes_downloaded))
+            return False
+        return True
 
     def download_and_save_file(self, resource_url, destination_path, sha256_hash=None):
         attempt = 0
@@ -167,9 +171,9 @@ class ResourceFetcher:
                 continue
 
             with open(destination_path, "wb") as local_file:
-                self._download_with_progress(response, local_file)
+                download_success = self._download_with_progress(response, local_file)
 
-            if os.path.exists(destination_path) and os.path.getsize(destination_path) > 0:
+            if download_success and os.path.exists(destination_path) and os.path.getsize(destination_path) > 0:
                 if sha256_hash:
                     print("Verifying SHA256 checksum...")
                     downloaded_hash = self.integrity_checker.get_sha256(destination_path)

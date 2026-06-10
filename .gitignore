@@ -161,3 +161,19 @@ cython_debug/
 
 *.DS_Store
 OCK_Files
+
+# --- PRIVATE / SENSITIVE — never publish ---
+# Built EFIs contain real SMBIOS serial/MLB/UUID and itlwm WiFiConfig (SSID +
+# WiFi passwords). SysReport has this machine's hardware. screenshoot has
+# personal screen photos.
+Results/
+efi-builds/
+SysReport/
+screenshoot/
+scratch/
+# Downloaded tool binaries (re-fetched by the tool; large, not source)
+Scripts/iasl
+Scripts/macserial
+Scripts/macserial.exe
+Scripts/macserial.linux
+sha_version.txt

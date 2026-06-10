@@ -129,6 +129,9 @@ class Utils:
         return next((item for item in data[start:end] if item.lower() in search_item.lower()), None)
 
     def normalize_path(self, path):
+        os.makedirs("scratch", exist_ok=True)
+        with open("scratch/debug_path.txt", "a") as f:
+            f.write(f"INPUT: {repr(path)}\n")
         path = re.sub(r'^[\'"]+|[\'"]+$', '', path)
         
         path = path.strip()
