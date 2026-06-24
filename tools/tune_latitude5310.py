@@ -18,19 +18,57 @@ Overrides (see tools/ research + apollohackintosh/Dell-5310-Hackintosh):
   4. Remove XHCI-unsupported.kext (CometLake xHCI works natively; USB is mapped
      via USBToolBox/UTBDefault placeholder, finalize on-hardware).
   5. boot-args: drop -igfxblt (CometLake needs no backlight boot-arg; backlight
-     is handled by the framebuffer fix). Keep -vi2c-force-polling.
+      is handled by the framebuffer fix). Add -vi2c-force-polling with
+      VoodooI2C's DEFAULT poll interval — this is the proven working baseline
+      for the DELL099F trackpad. Do NOT override the interval (a 2 ms override
+      caused trackpad stutter).
 """
 import os
 import plistlib
 import shutil
 
+# Tune script is bidirectional: it can also patch the live
+# efi-builds/EFI-<variant>/OC tree. We pick the path that exists; if both
+# exist we patch Results (the canonical build output) and the caller is
+# expected to copy it into efi-builds/ after re-running.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-EFI = os.path.join(REPO_ROOT, "Results", "EFI")
+EFIB_ROOT = os.path.join(REPO_ROOT, "efi-builds")
+RESULTS_EFI = os.path.join(REPO_ROOT, "Results", "EFI")
+
+# Prefer Results/EFI (post-build, the canonical state). Fall back to
+# efi-builds/EFI-native/OC (the currently-deployed tree) so the script is
+# also useful for hot-patching a live EFI without re-running the build.
+if os.path.isdir(RESULTS_EFI):
+    EFI = RESULTS_EFI
+elif os.path.isdir(os.path.join(EFIB_ROOT, "EFI-native")):
+    EFI = os.path.join(EFIB_ROOT, "EFI-native")
+elif os.path.isdir(os.path.join(EFIB_ROOT, "EFI-itlwm")):
+    EFI = os.path.join(EFIB_ROOT, "EFI-itlwm")
+else:
+    raise SystemExit(
+        "No EFI tree found. Build first (python3 tools/build_latitude5310.py) "
+        "or deploy a copy to efi-builds/EFI-native/."
+    )
 OC = os.path.join(EFI, "OC")
 CONFIG = os.path.join(OC, "config.plist")
 KEXTS = os.path.join(OC, "Kexts")
+print("tuning: {}".format(EFI))
 
 IGPU_PATH = "PciRoot(0x0)/Pci(0x2,0x0)"
+
+# DELL099F trackpad = Synaptics 0x044E:0x120A behind I2C#1.
+# macOS pointer pipeline adds 5-15 ms baseline latency vs Linux libinput's
+# 1-3 ms (4 layers vs 2) — this is the source of perceived "jitter" on
+# i5-10210U. Counter-measures: enable VoodooI2C force-polling via the
+# global boot-arg (default interval), drop macOS palm-rejection debounce.
+#
+# HISTORY: a previous revision set polling-interval=2 (500 Hz) both as a
+# DeviceProperties per-controller key AND a vi2c-force-poll-interval=2
+# boot-arg, which made the DELL099F trackpad choppy/stuttery. The proven
+# working baseline (EFIdulu) uses the bare -vi2c-force-polling boot-arg
+# with VoodooI2C's default interval — so we reverted to that and do NOT
+# override the interval at all.
+TRACKPAD_QUIET_TIME_MS = 150
 
 # Proven Latitude 5310 iGPU block (from apollohackintosh/Dell-5310-Hackintosh,
 # tested on this exact model). Bytes are little-endian as stored in plist.
@@ -114,21 +152,36 @@ def main():
     dp[IGPU_PATH] = dict(IGPU_BLOCK)
     changes.append("iGPU -> proven 5310 framebuffer block (device-id A53E0000 + connectors + backlight fix)")
 
-    # 1b. Trackpad force-polling on I2C controller #1 (smooths DELL099F lag).
+    # 1b. Trackpad force-polling on I2C controller #1. The proven working
+    #     baseline uses VoodooI2C's DEFAULT poll interval, so we only set the
+    #     force-polling flag here and deliberately do NOT override
+    #     polling-interval (overriding it to 2 ms caused the trackpad to
+    #     stutter). The matching -vi2c-force-polling boot-arg is added in step 5.
     if dp.get(I2C1_PATH, {}).get("force-polling") != bytes.fromhex("01000000"):
         dp.setdefault(I2C1_PATH, {})["force-polling"] = bytes.fromhex("01000000")
-        changes.append("I2C1 force-polling=01 (trackpad lag fix, reversible)")
+        changes.append("I2C1 force-polling=01 (trackpad lag fix, default interval, reversible)")
+    # Remove any previously-injected polling-interval override (legacy tune run).
+    if "polling-interval" in dp.get(I2C1_PATH, {}):
+        dp[I2C1_PATH].pop("polling-interval", None)
+        changes.append("I2C1 polling-interval removed (default interval restored — fixes trackpad stutter)")
 
     # 1c. Complete BCM4360 spoof — ONLY for the AirportItlwm (native) build so
     #     stock OCLP detects a Broadcom card and offers the WiFi root patch.
+    #     Idempotent: skip if the config is already in the post-OCLP state
+    #     (no spoof keys, only built-in=01). The spoof is one-way: once OCLP
+    #     has run and the user removed it, this script will NOT re-add it.
     is_native = any("AirportItlwm" in k.get("BundlePath", "") for k in c["Kernel"]["Add"])
     wifi_path = "PciRoot(0x0)/Pci(0x14,0x3)"
     if is_native:
-        spoof = {}
-        for k, v in BCM4360_SPOOF.items():
-            spoof[k] = v
-        dp[wifi_path] = spoof
-        changes.append("WiFi BCM4360 spoof COMPLETE (device-id/vendor-id/model) for OCLP detection")
+        existing = dp.get(wifi_path, {})
+        has_spoof = "device-id" in existing or "vendor-id" in existing
+        is_post_oclp = existing.get("built-in") and not has_spoof
+        if is_post_oclp:
+            changes.append("WiFi: post-OCLP state detected (built-in only), leaving spoof removed")
+        else:
+            spoof = dict(BCM4360_SPOOF)
+            dp[wifi_path] = spoof
+            changes.append("WiFi BCM4360 spoof COMPLETE (device-id/vendor-id/model) for OCLP detection")
 
     # 2 & 4. remove kexts from disk + Kernel>Add
     add = c["Kernel"]["Add"]
@@ -156,15 +209,23 @@ def main():
     # 5. boot-args:
     #    - ensure -igfxblt present (apollo's proven 5310 EFI uses it; without it
     #      the panel backlight stays dim on Comet Lake). CONFIRMED working.
-    #    - REMOVE -vi2c-force-polling: polling mode makes the DELL099F I2C
-    #      trackpad choppy + inaccurate clicks. apollo's proven 5310 EFI does
-    #      NOT use it (trackpad runs in GPIO interrupt mode via TPD0 GpioInt to
-    #      \_SB.PCI0.GPI0). Low-risk: if trackpad dies, re-add the arg.
+    #    - ADD -vi2c-force-polling: the proven working baseline (EFIdulu) drives
+    #      the DELL099F I2C trackpad via force-polling at VoodooI2C's DEFAULT
+    #      interval and the trackpad was smooth. Do NOT add a
+    #      vi2c-force-poll-interval override: a 2 ms override made the trackpad
+    #      stutter (this is what we are fixing). Reversible: if trackpad dies,
+    #      drop the arg.
+    #    - DROP -v and debug=0x100: development flags that slow boot and add
+    #      console noise. keepsyms=1 is kept for panic decoding.
     nv = c["NVRAM"]["Add"][NVRAM_GUID]
     ba = nv.get("boot-args", "")
-    toks = [t for t in ba.split() if t != "-vi2c-force-polling"]
+    drop = {"-v", "debug=0x100"}
+    toks = [t for t in ba.split()
+            if t not in drop and not t.startswith("vi2c-force-poll-interval")]
     if "-igfxblt" not in toks:
         toks.append("-igfxblt")
+    if "-vi2c-force-polling" not in toks:
+        toks.append("-vi2c-force-polling")
     new_ba = " ".join(toks)
     if new_ba != ba:
         nv["boot-args"] = new_ba
@@ -246,6 +307,34 @@ def main():
             "PlistPath": "Contents/Info.plist",
         })
         changes.append("added {} (fan/temp readout)".format(kfile))
+
+    # 8. HibernateMode = Auto: on a laptop, full battery drain with Hibernate
+    #    = None loses the in-RAM session. Auto writes a hibernate image at
+    #    critical battery and resumes from it on next boot. No downside for
+    #    a working EFI.
+    if boot.get("HibernateMode") != "Auto":
+        boot["HibernateMode"] = "Auto"
+        changes.append("Misc/Boot/HibernateMode -> Auto (preserve session on battery drain)")
+
+    # 9. VoodooI2CHID QuietTimeAfterTyping: drop from 500 ms default to
+    #    TRACKPAD_QUIET_TIME_MS so the trackpad becomes responsive faster
+    #    after a typing burst. The Precision Touchpad driver (which handles
+    #    DELL099F, HID UsagePage 13 Usage 5) reads this property.
+    vi2c_hid_info = os.path.join(KEXTS, "VoodooI2CHID.kext", "Contents", "Info.plist")
+    if os.path.isfile(vi2c_hid_info):
+        with open(vi2c_hid_info, "rb") as f:
+            vi = plistlib.load(f)
+        pers = vi.get("IOKitPersonalities", {})
+        ptd = pers.get("VoodooI2CHIDDevice Precision Touchpad HID Event Driver")
+        if ptd is not None and ptd.get("QuietTimeAfterTyping") != TRACKPAD_QUIET_TIME_MS:
+            ptd["QuietTimeAfterTyping"] = TRACKPAD_QUIET_TIME_MS
+            with open(vi2c_hid_info, "wb") as f:
+                plistlib.dump(vi, f)
+            changes.append(
+                "VoodooI2CHID QuietTimeAfterTyping -> {} ms (faster post-typing resume)".format(
+                    TRACKPAD_QUIET_TIME_MS
+                )
+            )
 
     with open(CONFIG, "wb") as f:
         plistlib.dump(c, f)

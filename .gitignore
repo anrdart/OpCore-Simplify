@@ -171,6 +171,11 @@ efi-builds/
 SysReport/
 screenshoot/
 scratch/
+# Recovered/extracted EFI snapshots (corrupted .pkgf tar archives) — contain
+# real SMBIOS serial/MLB/UUID/MAC. Same sensitivity as efi-builds.
+EFIdulu/
+EFI.zip
+*.pkgf
 # Downloaded tool binaries (re-fetched by the tool; large, not source)
 Scripts/iasl
 Scripts/macserial
